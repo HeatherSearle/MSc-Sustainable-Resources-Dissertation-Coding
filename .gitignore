@@ -1,0 +1,14 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+/code/Archive
+/data/raw_landings_data
+/data/raw_SST_data
+/testing
+
+.RDataTmp
+.RDataTmp1
+.DS_Store
+.Rproj
