@@ -143,7 +143,7 @@ corrplot(cor(monthly_data[!is.na(monthly_data$avg_temp),-c(1,4)]))
 
 # Load SST Scenario Data --------------------------------------------------
 
-# Read each file and add a scenario column
+# Read each file and update scenario column (already has scenario but has sst_ at the beginning)
 scenario_1 <- read_csv("data/tidy_SST_data/uk_mean_monthly_sst_SSP1_2.6.csv") %>%
   mutate(date = as.Date(date),
          scenario = "SSP1_2.6")
@@ -156,7 +156,7 @@ scenario_3 <- read_csv("data/tidy_SST_data/uk_mean_monthly_sst_SSP5_8.5.csv") %>
   mutate(date = as.Date(date),
          scenario = "SSP5_8.5")
 
-# Check data
+# Check which months had the max/min temperature
 summary(scenario_1)
 
 scenario_1[which.min(scenario_1$avg_temp), ]
@@ -168,12 +168,9 @@ scenario_2[which.max(scenario_2$avg_temp), ]
 scenario_3[which.min(scenario_3$avg_temp), ]
 scenario_3[which.max(scenario_3$avg_temp), ]
 
-# Because of start and end dates we will filter to 2014-2047
-
 # Combine all into long format and filter to start from 2014
 monthly_sst_data <- bind_rows(scenario_1, scenario_2, scenario_3) |>
-  mutate(year = as.numeric(format(date, "%Y"))) |> 
-  filter(year %in% 2014:2047)
+  mutate(year = as.numeric(format(date, "%Y")))
 
 # Compare the scenarios
 ggplot(monthly_sst_data, aes(x = date, y = avg_temp, col = scenario)) +
@@ -204,7 +201,6 @@ monthly_combined_sst_data <- bind_rows(monthly_sst_data, observed_sst_data) |>
 ggplot(monthly_combined_sst_data, aes(x = date, y = avg_temp, col = scenario)) +
   geom_line() +
   coord_cartesian(ylim = c(0, max(monthly_combined_sst_data$avg_temp)))
-# Oscillations are out of sync
 
 # Check annual data instead (note that observed data is missing half of 2024)
 annual_combined_sst_data <- monthly_combined_sst_data |> 
