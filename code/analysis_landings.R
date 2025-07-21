@@ -4,6 +4,8 @@ library(tidyverse)
 library(ggplot2)
 library(lubridate)
 library(corrplot)
+library(caret)
+library(dplyr)
 
 load("data/tidy_landings_data/UK_lobster_landings.RData") 
  # load("data/tidy_SST_data/UK_average_monthly_temperature.RData")
@@ -116,14 +118,16 @@ ggplot(annual_data, aes(x = year, y = avg_temp)) +
   geom_line() +
   coord_cartesian(ylim = c(0, max(annual_data$avg_temp)))
 
-# Since they are basically the same, we will work with landed_weight
+# Since they are basically the same, we will work with live_weight
 
 ## Check correlations ------------------------------------------------------
 
-# Check annual correlations (exclude live weight)
+# Check annual correlations (exclude landed weight)
 cor(annual_data[,-3])
 corrplot(cor(annual_data[,-3]))
-plot(cor(annual_data[,-3]))
+# Exclude 2024 since we are missing 6 months of temp data
+cor(annual_data[-11,-3])
+corrplot(cor(annual_data[-11,-3]))
 # Basically no correlation between year and the weights which is expected from graphs
 # And there is high correlation between year and value - expected from the graph
 # Low correlation between weight and value which is unexpected
@@ -146,29 +150,33 @@ corrplot(cor(monthly_data[!is.na(monthly_data$avg_temp),-c(1,4)]))
 # Read each file and update scenario column (already has scenario but has sst_ at the beginning)
 scenario_1 <- read_csv("data/tidy_SST_data/uk_mean_monthly_sst_SSP1_2.6.csv") %>%
   mutate(date = as.Date(date),
-         scenario = "SSP1_2.6")
+         scenario = "SSP1_2.6",
+         date = floor_date(date, unit = "month"))
 
 scenario_2 <- read_csv("data/tidy_SST_data/uk_mean_monthly_sst_SSP2_4.5.csv") %>%
   mutate(date = as.Date(date),
-         scenario = "SSP2_4.5")
+         scenario = "SSP2_4.5",
+         date = floor_date(date, unit = "month"))
 
 scenario_3 <- read_csv("data/tidy_SST_data/uk_mean_monthly_sst_SSP5_8.5.csv") %>%
   mutate(date = as.Date(date),
-         scenario = "SSP5_8.5")
+         scenario = "SSP5_8.5",
+         date = floor_date(date, unit = "month"))
 
 # Check which months had the max/min temperature
 summary(scenario_1)
 
 scenario_1[which.min(scenario_1$avg_temp), ]
-scenario_1[which.max(scenario_1$avg_temp), ]
-
 scenario_2[which.min(scenario_2$avg_temp), ]
-scenario_2[which.max(scenario_2$avg_temp), ]
-
 scenario_3[which.min(scenario_3$avg_temp), ]
+
+
+scenario_1[which.max(scenario_1$avg_temp), ]
+scenario_2[which.max(scenario_2$avg_temp), ]
 scenario_3[which.max(scenario_3$avg_temp), ]
 
-# Combine all into long format and filter to start from 2014
+
+# Combine all into long format
 monthly_sst_data <- bind_rows(scenario_1, scenario_2, scenario_3) |>
   mutate(year = as.numeric(format(date, "%Y")))
 
@@ -209,130 +217,157 @@ annual_combined_sst_data <- monthly_combined_sst_data |>
 ggplot(annual_combined_sst_data, aes(x = year, y = avg_temp, col = scenario)) +
   geom_line() +
   coord_cartesian(ylim = c(0, max(annual_combined_sst_data$avg_temp)))
-# Observed data is significantly lower
+# Observed data is slight lower
 
-# Lets quickly check about the oscillations
+# Lets quickly check about the oscillations for a specific year
 ggplot(monthly_combined_sst_data, aes(x = date, y = avg_temp, col = scenario)) +
   geom_line() +
   coord_cartesian(
     xlim = c(as.Date("2022-01-01"), as.Date("2022-12-31")),
     ylim = c(0, max(monthly_combined_sst_data$avg_temp)))
-# The months are wrong in the scenario data
+# The months are wrong in the scenario data - not anymore!
 
-# Combine data ------------------------------------------------------------
-
-combined_standardised_data_for_regression_SSTL <- inner_join(
-  average_monthly_temperature,
-  monthly_lobster_landings,
-  by = c("date" = "month_start_date") # Join by 'date' from temp and 'month_start_date' from lobster
-)
-
-str(combined_standardised_data_for_regression_SSTL)
 
 # Seasonal Regression Model  ----------------------------------------------
-# Join by 'date' from temp and 'month_start_date' from lobster
+## formatting the data
+# trimming the last 12 months as temp dat only avialble for 6 months of 2024
+monthly_data_trimmed <- monthly_data[1:(nrow(monthly_data) - 12), ]
 
-combined_standardised_data_for_regression_SSTL$month <- format(combined_standardised_data_for_regression_SSTL$date, "%m")
+# adding month factor
+monthly_data_trimmed$month <- format(monthly_data_trimmed$date, "%m")
+monthly_data_trimmed$month_factor <- as.factor(monthly_data_trimmed$month)
 
-combined_standardised_data_for_regression_SSTL$month_factor <- as.factor(combined_standardised_data_for_regression_SSTL$month)
+# standardising (use these variables for standardising scenario data)
+#  mean and sd for live_weight_tonnes
+mean_landings <- mean(monthly_data_trimmed$live_weight_tonnes, na.rm = TRUE)
+sd_landings <- sd(monthly_data_trimmed$live_weight_tonnes, na.rm = TRUE)
 
-str(combined_standardised_data_for_regression_SSTL)
+#  mean and sd for avg_temperature
+mean_temp <- mean(monthly_data_trimmed$avg_temp, na.rm = TRUE)
+sd_temp <- sd(monthly_data_trimmed$avg_temp, na.rm = TRUE)
 
-SSTL.seasonal.lm <- lm(standardised_landings ~ standardised_avg_temp + month_factor,
-                       data = combined_standardised_data_for_regression_SSTL)
+# Add z-score standardised columns to trimmed dataset
+monthly_data_trimmed$standardised_monthly_landings <- 
+  (monthly_data_trimmed$live_weight_tonnes - mean_landings) / sd_landings
+
+monthly_data_trimmed$standardised_monthly_temp <- 
+  (monthly_data_trimmed$avg_temp - mean_temp) / sd_temp
+
+### running the model
+SSTL.seasonal.lm <- lm(standardised_monthly_landings ~ standardised_monthly_temp + month_factor,
+                       data = monthly_data_trimmed)
 
 summary(SSTL.seasonal.lm )
-#r.squared = 0.9673519 - this is great! means much of the variance is explained by the model
+#r.squared = 0.9642 - this is great! means much of the variance is explained by the model
 
 # K-fold cross validation -------------------------------------------------
 # checking if the model is decent 
 ctrl <- trainControl(method = "cv", number = 10)
-model <- train(standardised_landings ~ standardised_avg_temp + month_factor,
-               data = combined_standardised_data_for_regression_SSTL,
+model <- train(standardised_monthly_landings ~ standardised_monthly_temp + month_factor,
+               data = monthly_data_trimmed,
                method = "lm", trControl = ctrl)
 
-print(model)
+summary(model) # Rsquared = 0.967
 
 
 # Scenario 1 --------------------------------------------------------------
-load("~/OneDrive - University College London/MSc Dissertation/dissertation_coding/data/standardised_data/scenario_1_filtered_standardised.RData")
 
-# predicting value based on the scenario 1 temperatures 
-scenario_1_filtered$predicted_landings <- predict(SSTL.seasonal.lm, newdata = scenario_1_filtered)
+## formatting data 
+# standardising using observed data mean and sd for observed temp
+scenario_1$standardised_monthly_temp <- (scenario_1$avg_temp - mean_temp) / sd_temp
 
-ggplot(scenario_1_filtered, aes(x = date, y = predicted_landings)) +
+# adding month factor
+scenario_1$month <- format(scenario_1$date, "%m")
+scenario_1$month_factor <- as.factor(scenario_1$month)
+
+# trimming for 2024 July-2050 only 
+scenario_1_trimmed <- scenario_1 |> 
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2050-12-01"))
+
+# predicting landings based on the scenario 1 temperatures 
+scenario_1_trimmed$predicted_landings <- predict(SSTL.seasonal.lm, newdata = scenario_1_trimmed)
+
+
+## destandardising ---------------------------------------------------------
+# also getting rid of extra unused variables 
+scenario_1_trimmed <- scenario_1_trimmed |> 
+  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) |> 
+  select(-sd_temp, -n_cells, -se_temp)
+
+# monthly data also includes the unstandardised variables so don't need to unstandardise just use live_weight_tonnes and avg_temp
+
+## plot monthly predictions-----------
+ggplot(scenario_1_trimmed, aes(x = date, y = predicted_landings_real)) +
   geom_line(, colour = "red") +
   theme_minimal()
 
-original_standard_landings <- combined_standardised_data_for_regression_SSTL |>
-  select(date, standardised_landings) |>
+# monthly plot scaled to 0 - to see the overall trend
+ggplot(scenario_1_trimmed, aes(x = date, y = predicted_landings_real)) +
+  geom_line( colour = "red") +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal()
+
+# stt and monthly predictions 
+ggplot(scenario_1_trimmed, aes(x = date)) +
+  geom_line(aes(y = predicted_landings_real), color = "red", size = 1) +
+  geom_line(aes(y = avg_temp), color = "blue", linetype = "dashed") +
+  scale_y_continuous(
+    name = "Predicted Landings",
+    sec.axis = sec_axis(~ ., name = "Sea Surface Temperature (scaled)")
+  ) +
+  theme_minimal() +
+  labs(title = "Monthly Predicted Landings and Sea Surface Temperature")
+
+## predicted annual totals ----------
+scenario_1_annual <- scenario_1_trimmed %>%
+  mutate(year = year(date)) %>%
+  group_by(scenario, year) %>%
+  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE), .groups = "drop")
+
+# plot annual predicted totals
+ggplot(scenario_1_annual, aes(x = year, y = total_landings)) +
+  geom_line( colour = "red") +
+  theme_minimal()
+
+# annual plot scaled to 0 - to see the overall trend
+ggplot(scenario_1_annual, aes(x = year, y = total_landings)) +
+  geom_line( colour = "red") +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal()
+
+## observed vs predicted ---------------------------------------------------
+
+original_landings <- monthly_data_trimmed |>
+  select(date, live_weight_tonnes) |>
   mutate(source = "Observed")
 
-predicted_standard_landings <- scenario_1_filtered |>
-  select(date, predicted_landings) |>
+predicted_landings_real <- scenario_1_trimmed |>
+  select(date, predicted_landings_real) |>
   mutate(source = "Predicted") |> 
-  rename(standardised_landings = predicted_landings)
+  rename(live_weight_tonnes = predicted_landings_real)
 
-S1_standardised_plot_data <- bind_rows(original_standard_landings, predicted_standard_landings)
+S1_observed_predicted_data <- bind_rows(original_landings, predicted_landings_real)
 
-ggplot(S1_standardised_plot_data, aes(x = date, y = standardised_landings, color = source)) +
+ggplot(S1_observed_predicted_data, aes(x = date, y = live_weight_tonnes, color = source)) +
   geom_line(linewidth = 1.2) +
   theme_minimal() +
   scale_color_manual(values = c("Observed" = "darkblue", "Predicted" = "lightblue"))
 
-# Un-standardising landings 
-mean_land <- mean(combined_standardised_data_for_regression_SSTL$total_live_weight_tonnes, na.rm = TRUE)
-sd_land <- sd(combined_standardised_data_for_regression_SSTL$total_live_weight_tonnes, na.rm = TRUE)
+# looking at annual observed vs predicted
 
-scenario_1_filtered <- scenario_1_filtered |>
-  mutate(
-    predicted_landings_unscaled = predicted_landings * sd_land + mean_land
-  )
-
-original_landings <- combined_standardised_data_for_regression_SSTL |>
-  select(date, total_live_weight_tonnes) |>
+original_landings_annual <- annual_data |>
+  select(year, live_weight_tonnes) |>
   mutate(source = "Observed")
 
-predicted_landings <- scenario_1_filtered |>
-  select(date, predicted_landings_unscaled) |>
+predicted_landings_real_annual <- scenario_1_annual |>
+  select(year, total_landings) |>
   mutate(source = "Predicted") |> 
-  rename(total_live_weight_tonnes = predicted_landings_unscaled)
+  rename(live_weight_tonnes = total_landings)
 
-S1_data <- bind_rows(original_landings, predicted_landings)
+S1_observed_predicted_annaul_data <- bind_rows(original_landings_annual, predicted_landings_real_annual)
 
-ggplot(S1_data, aes(x = date, y = total_live_weight_tonnes, color = source)) +
+ggplot(S1_observed_predicted_annaul_data, aes(x = year, y = live_weight_tonnes, color = source)) +
   geom_line(linewidth = 1.2) +
+  scale_y_continuous(limits = c(0, NA)) +
   theme_minimal() +
   scale_color_manual(values = c("Observed" = "darkblue", "Predicted" = "lightblue"))
-
-# Investigating the results 
-S1_data$year <- year(S1_data$date)
-
-obs_data <- subset(S1_data, year >= 2014 & year <= 2024)
-S1_2025_2035 <- subset(S1_data, year >= 2025 & year <= 2035)
-S1_2035_2045 <- subset(S1_data, year > 2035 & year <= 2045)
-
-# Totals
-total_obs <- sum(obs_data$total_live_weight_tonnes)
-total_S1_2025_2035 <- sum(S1_2025_2035$total_live_weight_tonnes)
-total_S1_2035_2045 <- sum(S1_2035_2045$total_live_weight_tonnes)
-
-# Averages
-avg_obs <- mean(obs_data$total_live_weight_tonnes)
-avg_S1_2025_2035 <- mean(S1_2025_2035$total_live_weight_tonnes)
-avg_S1_2035_2045 <- mean(S1_2035_2045$total_live_weight_tonnes)
-
-# Print
-cat("Total (Observed 2014–2024):", total_obs, "\n")
-cat("Total (S1 Predicted 2025–2035):", total_S1_2025_2035, "\n")
-cat("Total (S1 Predicted 2035–2045):", total_S1_2035_2045, "\n\n")
-
-cat("Average (Observed 2014–2024):", avg_obs, "\n")
-cat("Average (S1 Predicted 2025–2035):", avg_S1_2025_2035, "\n")
-cat("Average (S1 Predicted 2035–2045):", avg_S1_2035_2045, "\n")
-
-S1_data %>%
-  group_by(year) %>%
-  summarise(mean = mean(total_live_weight_tonnes, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(x = year, y = mean)) +
-  geom_line()
