@@ -6,6 +6,7 @@ library(lubridate)
 library(corrplot)
 library(caret)
 library(dplyr)
+library(readxl)
 
 load("data/tidy_landings_data/UK_lobster_landings.RData") 
 # load("data/tidy_SST_data/UK_average_monthly_temperature.RData")
@@ -108,8 +109,9 @@ ggplot(annual_data, aes(x = year, y = live_weight_tonnes-landed_weight_tonnes)) 
 
 # Value looks good - it looks like its going up more than the landings
 ggplot(annual_data, aes(x = year, y = value_000s)) +
-  geom_line() +
-  coord_cartesian(ylim = c(0, max(annual_data$value_000s)))
+  geom_line(colour = "red") +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal()
 # Could be due to inflation!!! Should remove inflation and check if value still goes up!
 
 # Not much trend in avg temp
@@ -227,6 +229,43 @@ ggplot(monthly_combined_sst_data, aes(x = date, y = avg_temp, col = scenario)) +
     ylim = c(0, max(monthly_combined_sst_data$avg_temp)))
 # The months are wrong in the scenario data - not anymore!
 
+
+# adjusting for inflation - CPI index -------------------------------------
+cpi_raw <- read_excel("data/cpi_uk_ons.xlsx", sheet = "filtered_data")
+
+cpi_clean <- cpi_raw |> 
+  mutate(date = parse_date_time(date, orders = "ym"),
+         month = month(date))
+
+monthly_data_cpi <- monthly_data |> 
+  left_join(cpi_clean, by = "date")
+
+base_cpi <- cpi_clean |> 
+  filter(date == as.Date("2015-07-01")) |> 
+  pull(cpi_index)
+
+monthly_data_cpi <- monthly_data_cpi |> 
+  mutate(
+    real_value = value_000s * (base_cpi / cpi_index)
+  )
+
+ggplot((monthly_data_cpi), aes(x = date, y = real_value)) +
+  geom_line(, colour = "red") +
+  theme_minimal()
+
+# filtering out the half year 2024
+annual_data_cpi <- monthly_data_cpi |> 
+  filter(year >= 2014, year <= 2023) |> 
+  group_by(year) |> 
+  summarise(
+    annual_value_nominal = sum(value_000s, na.rm = TRUE),
+    annual_value_real = sum(real_value, na.rm = TRUE), .groups = "drop")
+  
+
+ggplot((annual_data_cpi), aes(x = year, y = annual_value_real)) +
+  geom_line(colour = "red") +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal()
 
 # Seasonal Regression Model  ----------------------------------------------
 ## formatting the data
