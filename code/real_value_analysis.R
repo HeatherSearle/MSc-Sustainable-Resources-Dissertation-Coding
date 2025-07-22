@@ -36,6 +36,7 @@ monthly_data <- UK_lobster_landings |>
   )
 
 
+
 ## annual data -------------------------------------------------------------
 
 annual_data <- monthly_data |> 
@@ -98,13 +99,27 @@ annual_data_cpi <- monthly_data_cpi |>
   group_by(year) |> 
   summarise(
     annual_value_nominal = sum(value_000s, na.rm = TRUE),
-    annual_value_real = sum(real_value, na.rm = TRUE), .groups = "drop")
+    annual_value_real = sum(real_value, na.rm = TRUE),
+    annual_landed_weight = sum(landed_weight_tonnes, na.rm = TRUE), .groups = "drop")
 
 
 ggplot((annual_data_cpi), aes(x = year, y = annual_value_real)) +
   geom_line(colour = "red") +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal()
+
+# price per tonne
+annual_data_cpi <- annual_data_cpi |> 
+  mutate(price_per_tonne = annual_value_real / annual_landed_weight)
+
+ggplot(annual_data_cpi, aes(x = year, y = price_per_tonne)) +
+  geom_line(colour = "red") +
+  geom_smooth() +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal()
+
+annual_data_cpi[which.min(annual_data_cpi$price_per_tonne), ]
+annual_data_cpi[which.max(annual_data_cpi$price_per_tonne), ]
 
 # Regression Model  ----------------------------------------------
 
@@ -170,7 +185,7 @@ scenario_1 <- scenario_1 |>
 scenario_1_trimmed <- scenario_1 |> 
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2050-12-01"))
 
-# predicting landings based on the scenario 1 temperatures 
+# predicting value based on the scenario 1 temperatures 
 scenario_1_trimmed$predicted_value <- predict(realvalue.lm, newdata = scenario_1_trimmed)
 
 
@@ -211,6 +226,8 @@ ggplot(scenario_1_annual, aes(x = year, y = total_value)) +
   geom_smooth() +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal()
+
+saveRDS(scenario_1_annual, "scenario_1_annual_value.rds")
 
 ## observed and predicted ---------------------------------------------------
 
@@ -316,6 +333,8 @@ ggplot(scenario_2_annual, aes(x = year, y = total_value)) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal()
 
+saveRDS(scenario_2_annual, "scenario_2_annual_value.rds")
+
 ## observed vs predicted ---------------------------------------------------
 
 original_value <- monthly_data_cpi_trimmed |>
@@ -414,6 +433,8 @@ ggplot(scenario_3_annual, aes(x = year, y = total_value)) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal()
 
+saveRDS(scenario_3_annual, "scenario_3_annual_value.rds")
+
 ## observed vs predicted ---------------------------------------------------
 
 original_value <- monthly_data_cpi_trimmed |>
@@ -451,3 +472,132 @@ ggplot(S3_observed_predicted_annual_data, aes(x = year, y = annual_value_real, c
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal() +
   scale_color_manual(values = c("Observed" = "darkred", "Predicted" = "red"))
+
+# plotting all 3 scenarios ------------------------------------------------
+
+# Add scenario labels before binding
+S1 <- S1_observed_predicted_annual_data %>%
+  mutate(scenario = "S1")
+
+S2 <- S2_observed_predicted_annual_data %>%
+  mutate(scenario = "S2")
+
+S3 <- S3_observed_predicted_annual_data %>%
+  mutate(scenario = "S3")
+
+combined_scenario_data <- bind_rows(S1, S2, S3)
+
+# plotting the scenarios next to each other 
+ggplot(combined_scenario_data, aes(x = year, y = annual_value_real, color = scenario)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 2023, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+  facet_wrap(~ scenario) +  # One panel per scenario
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_color_manual(values = c("S1" = "blue", "S2" = "green", "S3" = "red")) +
+  theme_minimal()
+
+## fun chart sorry fan chart -----------
+
+
+# trimming for predicted values only 
+combined_scenario_data_trimmed <- combined_scenario_data |> 
+  filter(source == "Predicted")
+
+ggplot() +
+  # Observed line
+  geom_line(data = original_value_annual, aes(x = year, y = annual_value_real),
+            color = "black", linewidth = 1.2) +
+  
+  # Predicted lines for each scenario
+  geom_line(data = combined_scenario_data_trimmed, aes(x = year, y = annual_value_real, color = scenario),
+            linewidth = 1.2) +
+  
+  # Optional: smoother lines for predicted (if desired)
+  # geom_smooth(data = predicted_data, aes(x = year, y = live_weight_tonnes, color = scenario),
+  #             method = "loess", se = FALSE, size = 0.5, linetype = "dashed") +
+  
+  scale_color_manual(values = c("S1" = "red", "S2" = "blue", "S3" = "green")) +
+  theme_minimal() +
+  labs(title = "Observed and Scenario-based Predicted value",
+       x = "Year", y = "Value 000s", color = "Scenario") +
+  scale_y_continuous(limits = c(0, NA))
+
+
+# checking 2024 -----------------------------------------------------------
+
+sum_2024_first_half_obs <- monthly_data_cpi %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_real_value = sum(real_value, na.rm = TRUE))
+# 	14018.98
+
+# predicting value based on the scenario 1 temperatures 
+scenario_1$predicted_value <- predict(realvalue.lm, newdata = scenario_1)
+
+scenario_1 <- scenario_1 |> 
+  mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
+
+sum_2024_first_half_S1 <- scenario_1 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
+# 		14244.14
+
+#S2
+scenario_2$predicted_value <- predict(realvalue.lm, newdata = scenario_2)
+
+scenario_2 <- scenario_2 |> 
+  mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
+
+sum_2024_first_half_S2 <- scenario_2 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
+# 			14975.79
+
+#S3
+scenario_3$predicted_value <- predict(realvalue.lm, newdata = scenario_3)
+
+scenario_3 <- scenario_3 |> 
+  mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
+
+sum_2024_first_half_S3 <- scenario_3 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
+# 				13955.73
+
+#landings
+sum_2024_first_half_obs_L <- monthly_data_cpi %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_real_landings = sum(landed_weight_tonnes, na.rm = TRUE))
+# 	1075.227
+
+# predicting value based on the scenario 1 temperatures 
+scenario_1$predicted_landings <- predict(realvalue.lm, newdata = scenario_1)
+
+scenario_1 <- scenario_1 |> 
+  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
+
+sum_2024_first_half_S1_L <- scenario_1 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
+# 		1088.403
+
+#S2
+scenario_2$predicted_landings <- predict(realvalue.lm, newdata = scenario_2)
+
+scenario_2 <- scenario_2 |> 
+  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
+
+sum_2024_first_half_S2_L <- scenario_2 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
+# 		1162.7
+
+#S3
+scenario_3$predicted_landings <- predict(realvalue.lm, newdata = scenario_3)
+
+scenario_3 <- scenario_3 |> 
+  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
+
+sum_2024_first_half_S3_L <- scenario_3 %>%
+  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
+  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
+# 		1059.115
