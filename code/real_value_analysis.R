@@ -108,7 +108,7 @@ ggplot((annual_data_cpi), aes(x = year, y = annual_value_real)) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal()
 
-# price per tonne
+### price per tonne ------------------------------
 annual_data_cpi <- annual_data_cpi |> 
   mutate(price_per_tonne = annual_value_real / annual_landed_weight)
 
@@ -120,6 +120,8 @@ ggplot(annual_data_cpi, aes(x = year, y = price_per_tonne)) +
 
 annual_data_cpi[which.min(annual_data_cpi$price_per_tonne), ]
 annual_data_cpi[which.max(annual_data_cpi$price_per_tonne), ]
+mean(annual_data_cpi$price_per_tonne) # 12.12752 
+
 
 # Regression Model  ----------------------------------------------
 
@@ -148,14 +150,22 @@ monthly_data_cpi_trimmed$standardised_monthly_value <-
 monthly_data_cpi_trimmed$standardised_monthly_temp <- 
   (monthly_data_cpi_trimmed$avg_temp - mean_temp) / sd_temp
 
+#standardising year NEW
+# monthly_data_cpi_trimmed$standardised_year <- scale(monthly_data_cpi_trimmed$year)
+# year_mean <- attr(scale(monthly_data_cpi_trimmed$year), "scaled:center")
+# year_sd <- attr(scale(monthly_data_cpi_trimmed$year), "scaled:scale")
+
 
 ## run model ---------------------------------------------------------------
 
-realvalue.lm <- lm(standardised_monthly_value ~ standardised_monthly_temp + month_factor + year,
+lobstervalue.lm <- lm(standardised_monthly_value ~ standardised_monthly_temp + 
+                        month_factor,
                             data = monthly_data_cpi_trimmed)
 
-summary(realvalue.lm )
+summary(lobstervalue.lm )
+# Adjusted R-squared:  0.8855 
 
+anova(lobstervalue.lm)
 
 ## k-fold validation -------------------------------------------------------
 
@@ -181,12 +191,15 @@ scenario_1$month_factor <- as.factor(scenario_1$month)
 scenario_1 <- scenario_1 |> 
   mutate(year = year(date))
 
+# #standardising year NEW
+# scenario_1$standardised_year <- scale(scenario_1$year)
+
 # trimming for 2024 July-2050 only 
 scenario_1_trimmed <- scenario_1 |> 
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2050-12-01"))
 
 # predicting value based on the scenario 1 temperatures 
-scenario_1_trimmed$predicted_value <- predict(realvalue.lm, newdata = scenario_1_trimmed)
+scenario_1_trimmed$predicted_value <- predict(lobstervalue.lm, newdata = scenario_1_trimmed)
 
 
 ## destandardising ---------------------------------------------------------
@@ -194,6 +207,9 @@ scenario_1_trimmed$predicted_value <- predict(realvalue.lm, newdata = scenario_1
 scenario_1_trimmed <- scenario_1_trimmed |> 
   mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
 # select(-sd_temp, -n_cells, -se_temp)
+
+#NEW
+# scenario_1_trimmed$year <- (scenario_1_trimmed$standardised_year * year_sd) + year_mean
 
 # monthly data also includes the unstandardised variables so don't 
 # need to unstandardise just use real_value and avg_temp
@@ -230,6 +246,10 @@ ggplot(scenario_1_annual, aes(x = year, y = total_value)) +
 saveRDS(scenario_1_annual, "scenario_1_annual_value.rds")
 
 ## observed and predicted ---------------------------------------------------
+last_observed <- monthly_data_cpi_trimmed %>%
+  filter(date == max(date)) %>%
+  select(date, real_value) %>%
+  mutate(source = "Predicted")
 
 #monthly
 original_value <- monthly_data_cpi_trimmed |>
@@ -239,7 +259,8 @@ original_value <- monthly_data_cpi_trimmed |>
 predicted_value_real <- scenario_1_trimmed |>
   select(date, predicted_value_real) |>
   mutate(source = "Predicted") |> 
-  rename(real_value = predicted_value_real)
+  rename(real_value = predicted_value_real) |> 
+  bind_rows(last_observed)
 
 S1_observed_predicted_data <- bind_rows(original_value, predicted_value_real)
 
@@ -249,6 +270,11 @@ ggplot(S1_observed_predicted_data, aes(x = date, y = real_value, color = source)
   scale_color_manual(values = c("Observed" = "darkblue", "Predicted" = "lightblue"))
 
 # annual
+last_observed <- annual_data_cpi %>%
+  filter(year == max(year)) %>%
+  select(year, annual_value_real) %>%
+  mutate(source = "Predicted")
+
 original_value_annual <- annual_data_cpi |>
   select(year, annual_value_real) |>
   mutate(source = "Observed")
@@ -256,18 +282,26 @@ original_value_annual <- annual_data_cpi |>
 predicted_value_real_annual <- scenario_1_annual |>
   select(year, total_value) |>
   mutate(source = "Predicted") |> 
-  rename(annual_value_real = total_value)
+  rename(annual_value_real = total_value) |> 
+  bind_rows(last_observed)
 
 S1_observed_predicted_annual_data <- bind_rows(original_value_annual, predicted_value_real_annual)
 
+
+## S1 plot -----------------------------------------------------------------
+
+
 ggplot(S1_observed_predicted_annual_data, aes(x = year, y = annual_value_real, color = source)) +
   geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 2023, linetype = "dashed") +
   geom_smooth(se = FALSE, color = "black", size = 0.5) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal() +
-  scale_color_manual(values = c("Observed" = "darkblue", "Predicted" = "lightblue"))
+  scale_color_manual(values = c("Observed" = "darkblue", "Predicted" = "lightblue")) +
+  labs(title = "Observed and Predicted Lobster Value (000s)",
+       subtitle = "SSP1-2.6")
 
-# Scenario 2 --------------------------------------------------------------
+# scenario 2 --------------------------------------------------------------
 
 ## formatting data 
 # standardising using observed data mean and sd for observed temp
@@ -282,7 +316,7 @@ scenario_2_trimmed <- scenario_2 |>
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2050-12-01"))
 
 # predicting landings based on the scenario 1 temperatures 
-scenario_2_trimmed$predicted_value <- predict(realvalue.lm, newdata = scenario_2_trimmed)
+scenario_2_trimmed$predicted_value <- predict(lobstervalue.lm, newdata = scenario_2_trimmed)
 
 
 ## destandardising ---------------------------------------------------------
@@ -336,6 +370,12 @@ ggplot(scenario_2_annual, aes(x = year, y = total_value)) +
 saveRDS(scenario_2_annual, "scenario_2_annual_value.rds")
 
 ## observed vs predicted ---------------------------------------------------
+# monthly
+
+last_observed <- monthly_data_cpi_trimmed %>%
+  filter(date == max(date)) %>%
+  select(date, real_value) %>%
+  mutate(source = "Predicted")
 
 original_value <- monthly_data_cpi_trimmed |>
   select(date, real_value) |>
@@ -344,7 +384,8 @@ original_value <- monthly_data_cpi_trimmed |>
 S2_predicted_value_real <- scenario_2_trimmed |>
   select(date, predicted_value_real) |>
   mutate(source = "Predicted") |> 
-  rename(real_value = predicted_value_real)
+  rename(real_value = predicted_value_real) |> 
+  bind_rows(last_observed)
 
 S2_observed_predicted_data <- bind_rows(original_value, S2_predicted_value_real)
 
@@ -354,6 +395,10 @@ ggplot(S2_observed_predicted_data, aes(x = date, y = real_value, color = source)
   scale_color_manual(values = c("Observed" = "darkgreen", "Predicted" = "lightgreen"))
 
 # looking at annual observed vs predicted
+last_observed <- annual_data_cpi %>%
+  filter(year == max(year)) %>%
+  select(year, annual_value_real) %>%
+  mutate(source = "Predicted")
 
 original_value_annual <- annual_data_cpi |>
   select(year, annual_value_real) |>
@@ -362,16 +407,24 @@ original_value_annual <- annual_data_cpi |>
 S2_predicted_value_real_annual <- scenario_2_annual |>
   select(year, total_value) |>
   mutate(source = "Predicted") |> 
-  rename(annual_value_real = total_value)
+  rename(annual_value_real = total_value) |> 
+  bind_rows(last_observed)
 
 S2_observed_predicted_annual_data <- bind_rows(original_value_annual, S2_predicted_value_real_annual)
 
+
+## S2 plot -----------------------------------------------------------------
+
+
 ggplot(S2_observed_predicted_annual_data, aes(x = year, y = annual_value_real, color = source)) +
   geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 2023, linetype = "dashed") +
   geom_smooth(se = FALSE, color = "black", size = 0.5) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal() +
-  scale_color_manual(values = c("Observed" = "darkgreen", "Predicted" = "lightgreen"))
+  scale_color_manual(values = c("Observed" = "darkgreen", "Predicted" = "lightgreen")) +
+  labs(title = "Observed and Predicted Lobster Value (000s)",
+       subtitle = "SSP2-4.5")
 
 # scenario 3 --------------------------------------------------------------
 
@@ -388,7 +441,7 @@ scenario_3_trimmed <- scenario_3 |>
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2050-12-01"))
 
 # predicting landings based on the scenario 1 temperatures 
-scenario_3_trimmed$predicted_value <- predict(realvalue.lm, newdata = scenario_3_trimmed)
+scenario_3_trimmed$predicted_value <- predict(lobstervalue.lm, newdata = scenario_3_trimmed)
 
 
 ## destandardising ---------------------------------------------------------
@@ -437,6 +490,12 @@ saveRDS(scenario_3_annual, "scenario_3_annual_value.rds")
 
 ## observed vs predicted ---------------------------------------------------
 
+# monthly 
+last_observed <- monthly_data_cpi_trimmed %>%
+  filter(date == max(date)) %>%
+  select(date, real_value) %>%
+  mutate(source = "Predicted")
+
 original_value <- monthly_data_cpi_trimmed |>
   select(date, real_value) |>
   mutate(source = "Observed")
@@ -444,7 +503,8 @@ original_value <- monthly_data_cpi_trimmed |>
 S3_predicted_value_real <- scenario_3_trimmed |>
   select(date, predicted_value_real) |>
   mutate(source = "Predicted") |> 
-  rename(real_value = predicted_value_real)
+  rename(real_value = predicted_value_real) |> 
+  bind_rows(last_observed)
 
 S3_observed_predicted_data <- bind_rows(original_value, S3_predicted_value_real)
 
@@ -454,6 +514,10 @@ ggplot(S3_observed_predicted_data, aes(x = date, y = real_value, color = source)
   scale_color_manual(values = c("Observed" = "darkred", "Predicted" = "red"))
 
 # looking at annual observed vs predicted
+last_observed <- annual_data_cpi %>%
+  filter(year == max(year)) %>%
+  select(year, annual_value_real) %>%
+  mutate(source = "Predicted")
 
 original_value_annual <- annual_data_cpi |>
   select(year, annual_value_real) |>
@@ -462,16 +526,24 @@ original_value_annual <- annual_data_cpi |>
 S3_predicted_value_real_annual <- scenario_3_annual |>
   select(year, total_value) |>
   mutate(source = "Predicted") |> 
-  rename(annual_value_real = total_value)
+  rename(annual_value_real = total_value) |> 
+  bind_rows(last_observed)
 
 S3_observed_predicted_annual_data <- bind_rows(original_value_annual, S3_predicted_value_real_annual)
 
+
+## S3 plot -----------------------------------------------------------------
+
+
 ggplot(S3_observed_predicted_annual_data, aes(x = year, y = annual_value_real, color = source)) +
   geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 2023, linetype = "dashed") +
   geom_smooth(se = FALSE, color = "black", size = 0.5) +
   scale_y_continuous(limits = c(0, NA)) +
   theme_minimal() +
-  scale_color_manual(values = c("Observed" = "darkred", "Predicted" = "red"))
+  scale_color_manual(values = c("Observed" = "darkred", "Predicted" = "red")) +
+  labs(title = "Observed and Predicted Lobster Value (000s)",
+                subtitle = "SSP5-8.5")
 
 # plotting all 3 scenarios ------------------------------------------------
 
@@ -528,10 +600,10 @@ ggplot() +
 sum_2024_first_half_obs <- monthly_data_cpi %>%
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
   summarise(total_real_value = sum(real_value, na.rm = TRUE))
-# 	14018.98
+# 	actual = 14018.98
 
 # predicting value based on the scenario 1 temperatures 
-scenario_1$predicted_value <- predict(realvalue.lm, newdata = scenario_1)
+scenario_1$predicted_value <- predict(lobstervalue.lm, newdata = scenario_1)
 
 scenario_1 <- scenario_1 |> 
   mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
@@ -539,10 +611,12 @@ scenario_1 <- scenario_1 |>
 sum_2024_first_half_S1 <- scenario_1 %>%
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
   summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
-# 		14244.14
+# 		14244.14 - with year
+# 13343.41 - without year
+
 
 #S2
-scenario_2$predicted_value <- predict(realvalue.lm, newdata = scenario_2)
+scenario_2$predicted_value <- predict(lobstervalue.lm, newdata = scenario_2)
 
 scenario_2 <- scenario_2 |> 
   mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
@@ -550,10 +624,11 @@ scenario_2 <- scenario_2 |>
 sum_2024_first_half_S2 <- scenario_2 %>%
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
   summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
-# 			14975.79
+# 			14975.79 - with year
+# 14320.36 - without year
 
 #S3
-scenario_3$predicted_value <- predict(realvalue.lm, newdata = scenario_3)
+scenario_3$predicted_value <- predict(lobstervalue.lm, newdata = scenario_3)
 
 scenario_3 <- scenario_3 |> 
   mutate(predicted_value_real = (predicted_value * sd_value) + mean_value) 
@@ -561,43 +636,6 @@ scenario_3 <- scenario_3 |>
 sum_2024_first_half_S3 <- scenario_3 %>%
   filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
   summarise(total_nominal_value = sum(predicted_value_real, na.rm = TRUE))
-# 				13955.73
+# 				13955.73 - with year
+# 12958.31 - without year
 
-#landings
-sum_2024_first_half_obs_L <- monthly_data_cpi %>%
-  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
-  summarise(total_real_landings = sum(landed_weight_tonnes, na.rm = TRUE))
-# 	1075.227
-
-# predicting value based on the scenario 1 temperatures 
-scenario_1$predicted_landings <- predict(realvalue.lm, newdata = scenario_1)
-
-scenario_1 <- scenario_1 |> 
-  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
-
-sum_2024_first_half_S1_L <- scenario_1 %>%
-  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
-  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
-# 		1088.403
-
-#S2
-scenario_2$predicted_landings <- predict(realvalue.lm, newdata = scenario_2)
-
-scenario_2 <- scenario_2 |> 
-  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
-
-sum_2024_first_half_S2_L <- scenario_2 %>%
-  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
-  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
-# 		1162.7
-
-#S3
-scenario_3$predicted_landings <- predict(realvalue.lm, newdata = scenario_3)
-
-scenario_3 <- scenario_3 |> 
-  mutate(predicted_landings_real = (predicted_landings * sd_landings) + mean_landings) 
-
-sum_2024_first_half_S3_L <- scenario_3 %>%
-  filter(date >= as.Date("2024-01-01") & date <= as.Date("2024-06-30")) %>%
-  summarise(total_landings = sum(predicted_landings_real, na.rm = TRUE))
-# 		1059.115
