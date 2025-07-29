@@ -58,6 +58,8 @@ for (i in 1:nrow(scenarios)) {
   # --- Step 2: Regrid Data Layer-by-Layer using the Point-Rasterize Method ---
   
   processed_mean_layers <- list() # List to store regridded monthly means
+  processed_min_layers <- list()  # List to store regridded monthly minimums
+  processed_max_layers <- list()  # List to store regridded monthly maximums
 
   message("  -> Regridding month-by-month...")
   for (j in 1:nlyr(sst_stack_raw)) {
@@ -93,6 +95,12 @@ for (i in 1:nrow(scenarios)) {
     names(regridded_mean) <- paste0("mean_layer_", j) # Generic name for mean layer
     processed_mean_layers[[j]] <- regridded_mean
     
+    regridded_min <- rasterize(data_vect, target_grid_template, field = "value", fun = min, na.rm = TRUE)
+    processed_min_layers[[j]] <- regridded_min
+    
+    regridded_max <- rasterize(data_vect, target_grid_template, field = "value", fun = max, na.rm = TRUE)
+    processed_max_layers[[j]] <- regridded_max
+    
   }
   
   # --- Step 3: Combine Layers and Add Time Information ---
@@ -102,14 +110,28 @@ for (i in 1:nrow(scenarios)) {
   uk_sst_mean_stack <- rast(processed_mean_layers)
   time(uk_sst_mean_stack) <- time_points
   
+  #### NEW: Assemble Min and Max stacks ####
+  uk_sst_min_stack <- rast(processed_min_layers)
+  time(uk_sst_min_stack) <- time_points
+  
+  uk_sst_max_stack <- rast(processed_max_layers)
+  time(uk_sst_max_stack) <- time_points
+  #### NEW SECTION END ####
+  
   # Optional: Plot the first layer to visually confirm it worked
-  #plot(uk_sst_stack[[1]], main = paste("First time-slice for", scenario))
+  plot(uk_sst_mean_stack[[1]], main = paste("First time-slice for", scenario))
   
   # --- Step 4: Extract and Save Data ---
   message("  -> Calculating monthly mean and standard deviation...")
 
   # Overall mean temperature for the UK region (mean of cell means)
   overall_mean_temp <- global(uk_sst_mean_stack, fun = "mean", na.rm = TRUE)
+  
+  # NEW Overall minimum temperature across the UK region (minimum of cell minimums)
+  overall_min_temp <- global(uk_sst_min_stack, fun = "min", na.rm = TRUE)
+  
+  # NEW Overall maximum temperature across the UK region (maximum of cell maximums)
+  overall_max_temp <- global(uk_sst_max_stack, fun = "max", na.rm = TRUE)
   
   # Between-cell standard deviation (SD of cell means across the UK region)
   # This is your current 'sd_temp'
@@ -131,6 +153,8 @@ for (i in 1:nrow(scenarios)) {
   final_df <- data.frame(
     date = time(uk_sst_mean_stack),
     avg_temp = overall_mean_temp$mean,
+    min_temp = overall_min_temp$min, # Added: Overall min temp across AOI cells for the month
+    max_temp = overall_max_temp$max, 
     sd_temp = between_cell_sd_temp$sd, # Spatial variability of the 1-degree cell means
     n_cells = num_grid_cells$n_grid_cells,
     se_temp = se_overall_uk_mean, # The direct SEM for the overall UK mean
@@ -165,13 +189,55 @@ full_data <- bind_rows(all_scenarios_data)
 # Calculate Standard Error of the Mean (SEM) for monthly data
 # For a 95% CI, we typically use 1.96 * SEM (for large N, otherwise t-distribution)
 # Given your number of cells is likely large enough, 1.96 is reasonable.
-full_data <- full_data %>%
+full_data <- full_data |> 
   mutate(
     ci_lower_monthly = avg_temp - 1.96 * se_temp,
     ci_upper_monthly = avg_temp + 1.96 * se_temp
   )
 
-# --- Plot 1: Monthly SST with Confidence Interval ---
+# monthly range
+full_data <- full_data |>
+  mutate(
+    monthly_range = max_temp - min_temp # Calculate the range for each month
+  )
+
+# Calculate the MIN, MAX, and MEAN of the monthly_range for each scenario
+monthly_range_summary_by_scenario <- full_data %>%
+  group_by(scenario) %>%
+  summarise(
+    min_monthly_range = min(monthly_range, na.rm = TRUE), # Smallest monthly range observed in the scenario
+    avg_monthly_range = mean(monthly_range, na.rm = TRUE), # Average monthly range (which you already have)
+    max_monthly_range = max(monthly_range, na.rm = TRUE), # Largest monthly range observed in the scenario
+    .groups = "drop"
+  )
+
+write_csv(monthly_range_summary_by_scenario, "tables/monthly_range_summary_by_scenario.csv")
+
+# plot range
+
+full_data_for_plot <- full_data %>%
+  mutate(date = as.Date(date)) # Convert POSIXct to Date
+
+ggplot(full_data_for_plot, aes(x = date, y = avg_temp, color = scenario, fill = scenario)) +
+  geom_ribbon(aes(ymin = min_temp, ymax = max_temp), alpha = 0.2, color = NA) + # The min/max range ribbon
+  geom_line(linewidth = 0.8) + # Line for the monthly average
+  labs(
+    title = "Monthly Sea Surface Temperature: Min/Max Observed Range",
+    subtitle = "Shaded Area: Full Range of Temperatures Observed in UK AOI per Month",
+    x = "Date",
+    y = "Temperature (°C)",
+    color = "Scenario",
+    fill = "Scenario"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  scale_x_date(limits = c(as.Date("2020-01-01"), as.Date("2029-12-31")))
+
+
+# --- Plot : Monthly SST with Confidence Interval ---
 message("\n--- Generating Monthly SST Plot ---")
 monthly_plot <- ggplot(full_data, aes(x = date, y = avg_temp, color = scenario, fill = scenario)) +
   geom_ribbon(aes(ymin = ci_lower_monthly, ymax = ci_upper_monthly), alpha = 0.2, color = NA) +
@@ -196,6 +262,8 @@ annual_data <- full_data %>%
   group_by(year, scenario) %>%
   summarise(
     avg_temp_annual = mean(avg_temp, na.rm = TRUE),
+    annual_min_temp = min(min_temp, na.rm = TRUE), # Lowest observed min across the year
+    annual_max_temp = max(max_temp, na.rm = TRUE),
     # Sum of the SQUARED monthly standard errors (variances) for the year
     sum_monthly_se_sq = sum(se_temp^2, na.rm = TRUE),
     .groups = 'drop'
@@ -207,6 +275,24 @@ annual_data <- full_data %>%
     ci_lower_annual = avg_temp_annual - 1.96 * annual_sem,
     ci_upper_annual = avg_temp_annual + 1.96 * annual_sem
   )
+
+# annual range plot
+ggplot(annual_data, aes(x = year, y = avg_temp_annual, color = scenario, fill = scenario)) +
+  geom_ribbon(aes(ymin = annual_min_temp, ymax = annual_max_temp), alpha = 0.2, color = NA) + # The annual min/max range ribbon
+  geom_line(linewidth = 0.8) + # Line for the annual average
+  labs(
+    title = "Annual Sea Surface Temperature: Min/Max Observed Range in UK AOI",
+    subtitle = "Shaded Area: Full Range of Temperatures Observed Annually in UK AOI",
+    x = "Year",
+    y = "Temperature (°C)",
+    color = "Scenario",
+    fill = "Scenario"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
 
 # --- Plot 2: Annual SST with Confidence Interval ---
 message("\n--- Generating Annual SST Plot ---")

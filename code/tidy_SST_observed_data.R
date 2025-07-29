@@ -4,6 +4,10 @@ library(raster)
 library(ggplot2)
 library(sf)
 
+
+# Wrangling NetCDF files --------------------------------------------------
+
+
 # Define the file path (assuming the file is in your working directory)
 # (old 0-50m) nc_file_path <- "data/raw_SST_data/NWSHELF_MULTIYEAR_PHY_004_009_tempmonthly.nc"
 nc_file_path <- "data/raw_SST_data/cmems_mod_nws_phy-t_my_7km-3D_P1M-m_1752132330263.nc"
@@ -69,7 +73,7 @@ save(
 )
 
 
-# Plot sea temperature ----------------------------------------------------
+# Plot Jan 2014 sea temperature ----------------------------------------------------
 
 month_to_plot <- as.POSIXct("2014-01-01", tz = "UTC")
 single_month_data <- subset(observed_temperature_data, date == month_to_plot)
@@ -103,6 +107,7 @@ observed_average_monthly_temperature <- observed_temperature_data |>
 
 head(observed_average_monthly_temperature)
 tail(observed_average_monthly_temperature)
+# ^ only includes first 6 months of 2024 as that was what was available 
 str(observed_average_monthly_temperature)
 summary(observed_average_monthly_temperature$avg_temp)
 
@@ -115,7 +120,78 @@ observed_average_monthly_temperature[which.max(observed_average_monthly_temperat
 # Change so date columns as both Date rather than Posixt
 observed_average_monthly_temperature <- observed_average_monthly_temperature |> mutate(date = as.Date(date))
 
+## understanding the data and confidence intervals ------------------
+
+observed_average_monthly_temperature <- observed_temperature_data |>
+  group_by(date) |> # Assuming 'date' here represents the month (e.g., 2023-01-01 for January 2023)
+  summarise(
+    avg_temp = mean(temperature, na.rm = TRUE),
+    min_temp = min(temperature, na.rm = TRUE), # Calculate minimum temperature for the month
+    max_temp = max(temperature, na.rm = TRUE),
+    n_values = n(), # 1. Number of values going into avg_temp for each month
+    sd_temp = sd(temperature, na.rm = TRUE), # Calculate standard deviation
+    se_temp = sd_temp / sqrt(n_values), # 2. Calculate Standard Error of the Mean (SEM)
+    .groups = "drop"
+  ) |> 
+  mutate(
+    # Calculate 95% Confidence Interval for the mean
+    # For large N (typically N > 30), 1.96 is a good approximation for the z-score.
+    ci_lower_monthly = avg_temp - 1.96 * se_temp,
+    ci_upper_monthly = avg_temp + 1.96 * se_temp
+  )
+
+print(head(observed_average_monthly_temperature))
+
+# plotting 
+ggplot(observed_average_monthly_temperature, aes(x = date, y = avg_temp)) +
+  geom_ribbon(aes(ymin = min_temp, ymax = max_temp), fill = "purple", alpha = 0.2) + # Ribbon for min/max range
+  geom_line(color = "steelblue", size = 1) + # Line for the average temperature
+  # geom_point(color = "darkblue", size = 2, shape = 1) + # Points for monthly average
+  labs(
+    title = "Average Monthly Sea Temperature with Min/Max Observed Range",
+    x = "Date",
+    y = "Temperature (°C)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# monthly range
+observed_average_monthly_temperature <- observed_average_monthly_temperature |>
+  mutate(
+    monthly_range = max_temp - min_temp # Calculate the range for each month
+  )
+
+# Get the monthly_range value from the row where it is minimized
+min_observed_range_value <- observed_average_monthly_temperature %>%
+  filter(monthly_range == min(monthly_range, na.rm = TRUE)) %>%
+  pull(monthly_range) %>%
+  first() # Use first() in case there are multiple rows with the same min value
+
+# Get the monthly_range value from the row where it is maximized
+max_observed_range_value <- observed_average_monthly_temperature %>%
+  filter(monthly_range == max(monthly_range, na.rm = TRUE)) %>%
+  pull(monthly_range) %>%
+  first() # Use first() in case there are multiple rows with the same max value
+
+# Calculate the average monthly range (this was already correct)
+average_monthly_range_value <- mean(observed_average_monthly_temperature$monthly_range, na.rm = TRUE)
+
+# --- Create the table (this part was already correct in structure) ---
+monthly_range_summary_observed <- tibble( # Using tibble for cleaner output
+  Statistic = c("Minimum Monthly Range",
+                "Maximum Monthly Range",
+                "Average Monthly Range"),
+  Value = c(min_observed_range_value,
+            max_observed_range_value,
+            average_monthly_range_value)
+)
+
+print(monthly_range_summary_observed)
+
+# saving 
 save(
   observed_average_monthly_temperature, 
   file = "data/tidy_SST_data/observed_average_monthly_temperature.RData"
 )
+
+write_csv(monthly_range_summary_observed, "tables/monthly_range_summary_observed.csv")
